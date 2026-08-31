@@ -3,7 +3,6 @@ from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from auth import hash_password, verify_password, create_access_token, get_current_user
-
 from database import engine, SessionLocal, Base
 import models
 
