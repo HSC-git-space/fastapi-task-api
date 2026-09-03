@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from database import engine, SessionLocal, Base
@@ -55,7 +56,11 @@ async def create_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     hashed = hash_password(user.password)
     new_user = models.User(username=user.username, hush_hush=hashed)
     db.add(new_user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Username already taken")
     await db.refresh(new_user)
     return new_user
 
