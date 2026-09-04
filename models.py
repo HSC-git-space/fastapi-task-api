@@ -18,3 +18,10 @@ class Task(Base):
     description = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class BlacklistedToken(Base):
+    __tablename__ = "blacklisted_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String, unique=True, nullable=False, index=True)
+    blacklisted_at = Column(DateTime, default=datetime.utcnow)

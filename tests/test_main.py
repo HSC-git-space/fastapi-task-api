@@ -41,21 +41,17 @@ async def test_create_user():
 async def test_duplicate_username_rejected():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # create the first user
         response1 = await client.post("/users", json={"username": "bob", "password": "pass123"})
         assert response1.status_code == 200
 
-        # try to create a second user with the same username
         response2 = await client.post("/users", json={"username": "bob", "password": "differentpass"})
         assert response2.status_code != 200
 
 async def test_login_success():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # create a user first
         await client.post("/users", json={"username": "carol", "password": "mypassword"})
 
-        # now log in with the correct credentials
         response = await client.post("/login", json={"username": "carol", "password": "mypassword"})
         assert response.status_code == 200
         data = response.json()
@@ -74,26 +70,57 @@ async def test_login_wrong_password():
 async def test_user_cannot_access_others_task():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # create two users
         await client.post("/users", json={"username": "eve", "password": "pass1"})
         await client.post("/users", json={"username": "frank", "password": "pass2"})
 
-        # log in as both, get their tokens
         eve_login = await client.post("/login", json={"username": "eve", "password": "pass1"})
         frank_login = await client.post("/login", json={"username": "frank", "password": "pass2"})
         eve_token = eve_login.json()["access_token"]
         frank_token = frank_login.json()["access_token"]
 
-        # eve creates a task
         eve_headers = {"Authorization": f"Bearer {eve_token}"}
         create_response = await client.post("/tasks", json={"title": "Eve's private task"}, headers=eve_headers)
         task_id = create_response.json()["id"]
 
-        # frank tries to access eve's task using his own token
         frank_headers = {"Authorization": f"Bearer {frank_token}"}
         frank_attempt = await client.get(f"/tasks/{task_id}", headers=frank_headers)
         assert frank_attempt.status_code == 403
 
-        # eve can still access her own task
         eve_attempt = await client.get(f"/tasks/{task_id}", headers=eve_headers)
         assert eve_attempt.status_code == 200
+
+async def test_refresh_returns_new_access_token():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/users", json={"username": "grace", "password": "pass123"})
+        login_response = await client.post("/login", json={"username": "grace", "password": "pass123"})
+        refresh_token = login_response.json()["refresh_token"]
+
+        refresh_response = await client.post("/refresh", json={"refresh_token": refresh_token})
+        assert refresh_response.status_code == 200
+        assert "access_token" in refresh_response.json()
+
+async def test_blacklisted_refresh_token_rejected():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/users", json={"username": "heidi", "password": "pass123"})
+        login_response = await client.post("/login", json={"username": "heidi", "password": "pass123"})
+        refresh_token = login_response.json()["refresh_token"]
+
+        logout_response = await client.post("/logout", json={"refresh_token": refresh_token})
+        assert logout_response.status_code == 200
+
+        refresh_response = await client.post("/refresh", json={"refresh_token": refresh_token})
+        assert refresh_response.status_code == 401
+        assert refresh_response.json()["detail"] == "Refresh token has been revoked"
+
+async def test_access_token_rejected_at_refresh_endpoint():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/users", json={"username": "ivan", "password": "pass123"})
+        login_response = await client.post("/login", json={"username": "ivan", "password": "pass123"})
+        access_token = login_response.json()["access_token"]
+
+        refresh_response = await client.post("/refresh", json={"refresh_token": access_token})
+        assert refresh_response.status_code == 401
+        assert refresh_response.json()["detail"] == "Not a refresh token"

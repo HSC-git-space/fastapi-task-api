@@ -4,7 +4,14 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
-from auth import hash_password, verify_password, create_access_token, get_current_user
+from auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    create_refresh_token,
+    verify_refresh_token,
+    get_current_user,
+)
 from database import engine, SessionLocal, Base
 import models
 import asyncio
@@ -34,6 +41,9 @@ class UserOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 @app.on_event("startup")
 async def on_startup():
@@ -78,8 +88,23 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     user = result.scalars().first()
     if user is None or not verify_password(credentials.password, user.hush_hush):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
-    token = create_access_token({"sub": user.username, "user_id": user.id})
-    return {"access_token": token, "token_type": "bearer"}
+    access_token = create_access_token({"sub": user.username, "user_id": user.id})
+    refresh_token = create_refresh_token({"sub": user.username, "user_id": user.id})
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+
+@app.post("/refresh")
+async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
+    payload = await verify_refresh_token(body.refresh_token, db)
+    new_access_token = create_access_token({"sub": payload["sub"], "user_id": payload["user_id"]})
+    return {"access_token": new_access_token, "token_type": "bearer"}
+
+@app.post("/logout")
+async def logout(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
+    payload = await verify_refresh_token(body.refresh_token, db)
+    blacklisted = models.BlacklistedToken(jti=payload["jti"])
+    db.add(blacklisted)
+    await db.commit()
+    return {"message": "Logged out successfully"}
 
 @app.post("/tasks")
 async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
