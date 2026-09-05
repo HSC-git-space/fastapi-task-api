@@ -1,5 +1,7 @@
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +20,20 @@ import asyncio
 
 app = FastAPI()
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.status_code, "message": exc.detail}},
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"code": 422, "message": exc.errors()}},
+    )
+
 class TaskCreate(BaseModel):
     title: str
     completed: bool = False
@@ -26,6 +42,7 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
     completed: Optional[bool] = None
+    version: int
 
 class UserCreate(BaseModel):
     username: str
@@ -61,7 +78,7 @@ async def slow_demo():
     print("Done waiting.")
     return {"message": "This took 5 seconds but didn't block anything else"}
 
-@app.post("/users", response_model=UserOut)
+@app.post("/users", response_model=UserOut, status_code=201)
 async def create_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     hashed = hash_password(user.password)
     new_user = models.User(username=user.username, hush_hush=hashed)
@@ -106,7 +123,7 @@ async def logout(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return {"message": "Logged out successfully"}
 
-@app.post("/tasks")
+@app.post("/tasks", status_code=201)
 async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
     new_task = models.Task(
         title=task.title,
@@ -120,8 +137,18 @@ async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_db), curr
     return new_task
 
 @app.get("/tasks")
-async def get_tasks(db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    result = await db.execute(select(models.Task).filter(models.Task.user_id == current_user["user_id"]))
+async def get_tasks(
+        limit: int = 10,
+        offset: int = 0,
+        db: AsyncSession = Depends(get_db),
+        current_user: dict = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(models.Task)
+        .filter(models.Task.user_id == current_user["user_id"])
+        .offset(offset)
+        .limit(limit)
+    )
     return result.scalars().all()
 
 @app.get("/tasks/{task_id}")
@@ -142,15 +169,18 @@ async def update_task(task_id: int, updates: TaskUpdate, db: AsyncSession = Depe
         raise HTTPException(status_code=404, detail="Task not found")
     if task.user_id != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="Not authorized to modify this task")
+    if task.version != updates.version:
+        raise HTTPException(status_code=409, detail="Task has been modified since you last loaded it")
     if updates.title is not None:
         task.title = updates.title
     if updates.completed is not None:
         task.completed = updates.completed
+    task.version += 1
     await db.commit()
     await db.refresh(task)
     return task
 
-@app.delete("/tasks/{task_id}")
+@app.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: int, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
     result = await db.execute(select(models.Task).filter(models.Task.id == task_id))
     task = result.scalars().first()
@@ -160,4 +190,4 @@ async def delete_task(task_id: int, db: AsyncSession = Depends(get_db), current_
         raise HTTPException(status_code=403, detail="Not authorized to delete this task")
     await db.delete(task)
     await db.commit()
-    return {"message": "Task deleted"}
+    return Response(status_code=204)

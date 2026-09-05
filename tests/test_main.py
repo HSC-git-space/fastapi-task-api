@@ -32,7 +32,7 @@ async def test_create_user():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/users", json={"username": "alice", "password": "secret123"})
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = response.json()
         assert data["username"] == "alice"
         assert "id" in data
@@ -42,10 +42,10 @@ async def test_duplicate_username_rejected():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response1 = await client.post("/users", json={"username": "bob", "password": "pass123"})
-        assert response1.status_code == 200
+        assert response1.status_code == 201
 
         response2 = await client.post("/users", json={"username": "bob", "password": "differentpass"})
-        assert response2.status_code != 200
+        assert response2.status_code != 201
 
 async def test_login_success():
     transport = ASGITransport(app=app)
@@ -65,7 +65,7 @@ async def test_login_wrong_password():
 
         response = await client.post("/login", json={"username": "dave", "password": "wrongpass"})
         assert response.status_code == 401
-        assert response.json()["detail"] == "Incorrect username or password"
+        assert response.json()["error"]["message"] == "Incorrect username or password"
 
 async def test_user_cannot_access_others_task():
     transport = ASGITransport(app=app)
@@ -112,7 +112,7 @@ async def test_blacklisted_refresh_token_rejected():
 
         refresh_response = await client.post("/refresh", json={"refresh_token": refresh_token})
         assert refresh_response.status_code == 401
-        assert refresh_response.json()["detail"] == "Refresh token has been revoked"
+        assert refresh_response.json()["error"]["message"] == "Refresh token has been revoked"
 
 async def test_access_token_rejected_at_refresh_endpoint():
     transport = ASGITransport(app=app)
@@ -123,4 +123,52 @@ async def test_access_token_rejected_at_refresh_endpoint():
 
         refresh_response = await client.post("/refresh", json={"refresh_token": access_token})
         assert refresh_response.status_code == 401
-        assert refresh_response.json()["detail"] == "Not a refresh token"
+        assert refresh_response.json()["error"]["message"] == "Not a refresh token"
+
+async def test_update_task_with_correct_version_succeeds():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/users", json={"username": "judy", "password": "pass123"})
+        login_response = await client.post("/login", json={"username": "judy", "password": "pass123"})
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        create_response = await client.post("/tasks", json={"title": "Original title"}, headers=headers)
+        task = create_response.json()
+        assert task["version"] == 0
+
+        update_response = await client.patch(
+            f"/tasks/{task['id']}",
+            json={"title": "Updated title", "version": 0},
+            headers=headers,
+        )
+        assert update_response.status_code == 200
+        updated_task = update_response.json()
+        assert updated_task["title"] == "Updated title"
+        assert updated_task["version"] == 1
+
+async def test_update_task_with_stale_version_rejected():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/users", json={"username": "karl", "password": "pass123"})
+        login_response = await client.post("/login", json={"username": "karl", "password": "pass123"})
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        create_response = await client.post("/tasks", json={"title": "Original title"}, headers=headers)
+        task = create_response.json()
+
+        first_update = await client.patch(
+            f"/tasks/{task['id']}",
+            json={"title": "First update", "version": 0},
+            headers=headers,
+        )
+        assert first_update.status_code == 200
+
+        stale_update = await client.patch(
+            f"/tasks/{task['id']}",
+            json={"title": "Stale update", "version": 0},
+            headers=headers,
+        )
+        assert stale_update.status_code == 409
+        assert stale_update.json()["error"]["message"] == "Task has been modified since you last loaded it"

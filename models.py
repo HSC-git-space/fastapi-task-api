@@ -11,13 +11,14 @@ class User(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
-
+    
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     completed = Column(Boolean, default=False)
     description = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    version = Column(Integer, nullable=False, default=0)
 
 class BlacklistedToken(Base):
     __tablename__ = "blacklisted_tokens"
